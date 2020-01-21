@@ -15,12 +15,11 @@
  */
 
 import Debug from 'debug'
-import { Table, Arguments, CodedError, Streamable, Abortable, Watchable, Watcher, WatchPusher } from '@kui-shell/core'
+import { Table, Arguments, Streamable, Abortable, Watchable, Watcher, WatchPusher } from '@kui-shell/core'
 
 import fqn from '../fqn'
-import { formatOf, KubeOptions, KubeExecOptions } from '../options'
-
-import { preprocessTable, Pair } from '../../../lib/view/formatTable'
+import { Pair } from '../../../lib/view/formatTable'
+import { formatOf, KubeOptions } from '../options'
 
 const debug = Debug('plugin-kubeui/controller/watch/watcher')
 
@@ -70,6 +69,29 @@ function findFullRows(arr: Pair[][], nCols: number): { firstFullIdx: number; las
   return { firstFullIdx: -1, lastFullIdx: -1 }
 }
 
+/** columns keys for our proto-table */
+const keys = ['NAME', 'KIND', 'APIVERSION', 'NAMESPACE']
+
+/**
+ * Turn a raw proto table response into an row-array of column-array
+ * of key-value `Pairs`.
+ *
+ */
+function preprocessTable(rawTable: string): Pair[][] {
+  return rawTable.split(/\n/).map(rawRow =>
+    rawRow
+      .split(/\s+/)
+      .filter(_ => _)
+      .map((value, colIdx) => ({ key: keys[colIdx], value }))
+  )
+}
+
+/* type Update = { type: 'update'; row: Row }
+type Header = { type: 'header'; header: Row }
+type Offline = { type: 'offline'; key: string }
+type AllOffline = { type: 'allOffline' }
+type SomeUpdate = AllOffline | Header | Offline | Update */
+
 class KubectlWatcher implements Abortable, Watcher {
   /**
    * We expect k columns; see the custom-columns below.
@@ -90,6 +112,8 @@ class KubectlWatcher implements Abortable, Watcher {
 
   /** the table push API */
   private pusher: WatchPusher
+
+  // private updateQueue: SomeUpdate[]
 
   /**
    * @param output This is the output format that the user desired. Below, we
@@ -145,7 +169,7 @@ class KubectlWatcher implements Abortable, Watcher {
         this.leftover = undefined
 
         // here is where we turn the raw data into tabular data
-        const allRows = preprocessTable([rawData])[0]
+        const allRows = preprocessTable(rawData)
 
         // find the interval of "full" rows; we may get back partial
         // rows, due to the way output streams back to us from the
@@ -195,11 +219,11 @@ class KubectlWatcher implements Abortable, Watcher {
         // since we are using watch-only, this code is not currently
         // needed; if we every decide to use --watch, this could be
         // helpful.
-        /* const tableWithHeader = tables.find(table => table && table.header)
+        const tableWithHeader = tables.find(table => table && table.header)
         if (tableWithHeader) {
           // yup, we have a header; push it to the view
           this.pusher.header(tableWithHeader.header)
-        } */
+        }
 
         // based on the information we got back, 1) we push updates to
         // the table model; and 2) we may be able to discern that we
@@ -236,7 +260,7 @@ class KubectlWatcher implements Abortable, Watcher {
     const command =
       this.args.command
         .replace(/^k(\s)/, 'kubectl$1')
-        .replace(/--watch=true|-w=true|--watch-only=true|--watch|-w|--watch-only/g, '--watch-only')
+        .replace(/--watch=true|-w=true|--watch-only=true|--watch|-w|--watch-only/g, '--watch')
         .replace(new RegExp(`(-o|--output)(\\s+|=)${this.output}`), '') +
       ` -o custom-columns=NAME:.metadata.name,KIND:.kind,APIVERSION:.apiVersion,NAMESPACE:.metadata.namespace`
     // ^^^^^ keep these in sync with nCols above !!
@@ -252,60 +276,9 @@ class KubectlWatcher implements Abortable, Watcher {
   }
 }
 
-/**
- * Start watching for changes to the resources of the given table.
- *
- */
-export default async function doGetWatchTable(args: Arguments<KubeOptions>): Promise<string | (Table & Watchable)> {
-  try {
-    // we do a get, then (above) a watch-only; this is the get part;
-    // observe how we strip off any --watch requests from the user's
-    // command line
-    const cmd = args.command
-      .replace(/^k(\s)/, 'kubectl$1')
-      .replace(/--watch=true|-w=true|--watch-only=true|--watch|-w|--watch-only/g, '') // strip --watch
-    const initialTable = await args.REPL.qexec<Table>(cmd).catch((err: CodedError) => {
-      if (err.code !== 404) {
-        throw err
-      } else {
-        // otherwise, we want parity with the (admittedly kinda odd) kubectl behavior:
-        //
-        // a) kubectl get <kind> <name> -w -> then <name> does not exist; fail fast
-        // b) kubectl get <kind> -w -n <ns> -> then <ns> does not exist; enter poll mode
-        //
-        const argv = args.argvNoOptions
-        const idx = argv.indexOf('get') + 1
-        const kind = argv[idx] // <-- <kind>
-        const name = argv[idx + 1] // <-- <name>
-
-        if (kind && name) {
-          // case a
-          throw err
-        } else {
-          // case b
-          return {
-            body: []
-          } as Table
-        }
-      }
-    })
-
-    if (typeof initialTable === 'string') {
-      // then this clearly is not watchable... this could happen if
-      // kubectl decides to return something non-tabular in response
-      // to a get command
-      return ((args.execOptions as KubeExecOptions).initialResponse as string) || initialTable
-    } else {
-      // otherwise, we got a table back; now splice in our watcher
-      return {
-        header: initialTable.header,
-        body: initialTable.body,
-        watch: new KubectlWatcher(args) // <-- our watcher
-      }
-    }
-  } catch (err) {
-    const message = ((args.execOptions as KubeExecOptions).initialResponse as string) || err.message
-    err.message = message
-    throw err
+export default function doGetWatchTable(args: Arguments<KubeOptions>): Table & Watchable {
+  return {
+    body: [],
+    watch: new KubectlWatcher(args) // <-- our watcher
   }
 }
