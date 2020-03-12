@@ -59,7 +59,7 @@ const commandDocTable = (
   body: rows.map(({ command, docs }) => ({
     name: command,
     css: headerKey === 'COMMAND' ? 'clickable semi-bold map-key' : 'sub-text',
-    onclick: headerKey === 'COMMAND' ? `${kubeCommand} ${verb || ''} ${command} -h` : undefined,
+    onclick: headerKey === 'COMMAND' ? `${kubeCommand}${verb ? ` ${verb}` : ''} ${command} -h` : undefined,
     attributes: [{ key: 'DOCS', value: docs, css: 'map-value' }]
   }))
 })
@@ -218,9 +218,20 @@ export const renderHelp = (out: string, command: string, verb: string, entityTyp
     {
       mode: 'Introduction',
       content: header
+        .replace(/\n\s*(IMPORTANT:)([^\n]+)/, `\n> **$1**$2`)
+        .replace(/(\s)(NOT)(\s)/g, '$1**$2**$3')
+        .replace(
+          /(:\n\n\s*)((([^,\n])+,)+[^,\n]+)/g,
+          (_, m1, m2) =>
+            `${m1}${m2
+              .split(/,/)
+              .map(_ => ` - ${_}`)
+              .join('\n')}\n`
+        )
         .concat('\n\n')
         .replace(/(--\S+)/g, '`$1`')
-        .replace(/^([^\n.]+)(\.?)/, '### About\n$1')
+        .replace(/^([^\n.]+)(\.?)/, '### About\n#### $1')
+        .replace(/\n\s*(Find more information at:)\s+([^\n]+)/, '\n### More Information\n$2')
         .concat(
           `
 ### Usage
